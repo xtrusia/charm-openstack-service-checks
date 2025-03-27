@@ -18,6 +18,7 @@ Available states:
 """
 import base64
 import subprocess
+import os
 
 from charmhelpers.core import hookenv, host, unitdata
 
@@ -37,7 +38,7 @@ from lib_openstack_service_checks import (
     OSCKeystoneError,
 )
 
-CERT_FILE = "/usr/local/share/ca-certificates/openstack-service-checks.crt"
+CERT_DIR = "/usr/local/share/ca-certificates/"
 helper = OSCHelper()
 
 
@@ -198,15 +199,32 @@ def render_config():
     if not creds:
         return
 
-    if helper.charm_config["trusted_ssl_ca"].strip():
-        trusted_ssl_ca = helper.charm_config["trusted_ssl_ca"].strip()
+    trusted_ssl_ca = helper.charm_config["trusted_ssl_ca"].strip()
+    if trusted_ssl_ca:
         hookenv.log("Writing ssl ca cert:{}".format(trusted_ssl_ca))
         cert_content = base64.b64decode(trusted_ssl_ca).decode()
-        try:
-            with open(CERT_FILE, "w") as fd:
-                fd.write(cert_content)
-            subprocess.call(["/usr/sbin/update-ca-certificates", "--fresh"])
+        certs = cert_content.split("-----END CERTIFICATE-----")
+        certs = [cert.strip() + "\n-----END CERTIFICATE-----\n" for cert in certs if cert.strip()]
 
+        for idx, cert in enumerate(certs):
+            cert_file = os.path.join(CERT_DIR, f"openstack-service-checks-{idx + 1}.crt")
+            try:
+                with open(cert_file, "w") as fd:
+                    fd.write(cert)
+            except IOError as error:
+                hookenv.log(
+                    "Failed to write cert {cert_file}: {error}".format(
+                        cert_file=cert_file, error=error
+                    ),
+                    hookenv.ERROR,
+                )
+                hookenv.status_set(
+                    "blocked", "Error writing cert {}. check logs".format(cert_file)
+                )
+                return
+
+        try:
+            subprocess.call(["/usr/sbin/update-ca-certificates", "--fresh"])
         except subprocess.CalledProcessError as error:
             hookenv.log("update-ca-certificates failed: {}".format(error), hookenv.ERROR)
             hookenv.status_set("blocked", "update-ca-certificates error. check logs")
